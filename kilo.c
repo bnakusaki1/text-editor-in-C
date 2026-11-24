@@ -1,4 +1,8 @@
 /*** includes ***/
+#define _DEFAULT_SOURCE
+#define _BSD_SOURCE
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <stdio.h>
@@ -6,6 +10,7 @@
 #include <unistd.h>
 #include <termios.h>
 #include <string.h>
+#include <sys/types.h>
 
 /*** defines ***/
 #define KILO_VERSION "0.0.1"
@@ -13,11 +18,19 @@
 #define ABUF_INIT {NULL, 0}
 
 /*** data ***/
+typedef struct e_row
+{
+    int size;
+    char *chars;
+} e_row;
+
 struct editorConfig
 {
     int cx, cy;
     int screen_rows;
     int screen_cols;
+    int num_rows;
+    e_row *row;
     struct termios original_termios;
 };
 
@@ -62,12 +75,23 @@ void editorMoveCursor(int key);
 void editorRefreshScreen(void);
 void editorDrawRows(struct abuf *ab);
 
+/*** file i/o ***/
+void editorOpen(char *filename);
+
+/*** row operations ***/
+void editorAppendRow(char *s, size_t len);
+
 /*** init ***/
 void initEditor(void);
-int main(void)
+int main(int argc, char *argv[])
 {
     enableRawMode();
     initEditor();
+    if (argc >= 2)
+    {
+        editorOpen(argv[1]);
+    }
+
     while (1)
     {
         editorRefreshScreen();
@@ -273,30 +297,45 @@ void editorRefreshScreen(void)
 
 void editorDrawRows(struct abuf *ab)
 {
-    for (int y = 0; y < E.screen_rows; y++)
+    int y;
+    for (y = 0; y < E.screen_rows; y++)
     {
-        abAppend(ab, "\x1b[K", 3);
-        if (y == E.screen_rows / 2)
+        if (y >= E.num_rows)
         {
-            char welcome[80];
-            int welcome_len = snprintf(welcome, sizeof(welcome),
-                                       "Kilo editor -- version %s", KILO_VERSION);
-            if (welcome_len > E.screen_cols)
-                welcome_len = E.screen_cols;
-            int padding = (E.screen_cols - welcome_len) / 2;
-            if (padding)
+            if (y == E.screen_rows / 3 && E.num_rows == 0)
+            {
+                char welcome[80];
+                int welcome_len = snprintf(welcome, sizeof(welcome),
+                                           "Kilo editor -- version %s", KILO_VERSION);
+                if (welcome_len > E.screen_cols)
+                    welcome_len = E.screen_cols;
+                int padding = (E.screen_cols - welcome_len) / 2;
+                if (padding)
+                {
+                    abAppend(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--)
+                    abAppend(ab, " ", 1);
+                abAppend(ab, welcome, welcome_len);
+            }
+            else
             {
                 abAppend(ab, "~", 1);
-                padding--;
             }
-            while (padding--)
-                abAppend(ab, " ", 1);
-            abAppend(ab, welcome, welcome_len);
         }
         else
-            abAppend(ab, "~", 1);
+        {
+            int len = E.row->size;
+            if (len > E.screen_cols)
+                len = E.screen_cols;
+            abAppend(ab, E.row->chars, len);
+        }
+        abAppend(ab, "\x1b[K", 3);
         if (y < E.screen_rows - 1)
+        {
             abAppend(ab, "\r\n", 2);
+        }
     }
 }
 
@@ -321,6 +360,8 @@ int getWindowSize(int *rows, int *cols)
 void initEditor(void)
 {
     E.cx = E.cy = 0;
+    E.num_rows = 0;
+    E.row = NULL;
 
     if (getWindowSize(&E.screen_rows, &E.screen_cols) == -1)
         die("getWindowSize");
@@ -366,4 +407,33 @@ void abAppend(struct abuf *ab, const char *s, int len)
 void abFree(struct abuf *ab)
 {
     free(ab->b);
+}
+
+void editorOpen(char *filename)
+{
+    FILE *fp = fopen(filename, "r");
+    if (!fp)
+        die("fopen");
+    char *line = NULL;
+    size_t linecap = 0;
+    ssize_t line_len;
+    line_len = getline(&line, &linecap, fp);
+    if (line_len != -1)
+    {
+        while (line_len > 0 && (line[line_len - 1] == '\n' ||
+                                line[line_len - 1] == '\r'))
+            line_len--;
+        editorAppendRow(line, line_len);
+    }
+    free(line);
+    fclose(fp);
+}
+
+void editorAppendRow(char *s, size_t len)
+{
+    E.row->size = len;
+    E.row->chars = malloc(len + 1);
+    memcpy(E.row->chars, s, len);
+    E.row->chars[len] = '\0';
+    E.num_rows = 1;
 }

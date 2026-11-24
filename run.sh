@@ -2,4 +2,4 @@
 set -e
 
 make
-exec ./kilo "$@"
+exec ./kilo example.txt"$@"
